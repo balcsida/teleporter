@@ -23,7 +23,10 @@ pub struct Connection {
 }
 
 fn sign_in(dir: &Path) -> Result<(crate::Session, crate::CloudConfig, crate::AwsCredentials)> {
-    let session = sso::load_session(dir)?.ok_or("not signed in; run: teleport-split login")?;
+    let mut session = sso::load_session(dir)?.ok_or("not signed in; run: teleport-split login")?;
+    if sso::refresh(&mut session)? {
+        sso::save_session(dir, &session)?;
+    }
     let cloud = cloud::fetch_config()?;
     let creds = sso::aws_credentials(&session, &cloud)?;
     Ok((session, cloud, creds))

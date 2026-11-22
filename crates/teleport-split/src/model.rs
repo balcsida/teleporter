@@ -16,6 +16,14 @@ pub struct Session {
     pub cookies: BTreeMap<String, String>,
     /// A UUID that identifies this installation to the console.
     pub client_id: String,
+    /// Set instead of the cookies after a browser sign-in.
+    #[serde(default)]
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: String,
+    /// When the access token stops working, in seconds since the epoch.
+    #[serde(default)]
+    pub expires_at: u64,
 }
 
 /// Short-lived AWS credentials minted from a [`Session`].

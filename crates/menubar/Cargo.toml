@@ -5,6 +5,7 @@ edition = "2024"
 description = "Menu bar app for teleport-split"
 
 [dependencies]
+core-foundation = "0.10"
 tao = "0.37.3"
 teleport-split = { path = "../teleport-split" }
 tray-icon = "0.26.1"

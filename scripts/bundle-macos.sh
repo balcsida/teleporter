@@ -26,6 +26,17 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>$version</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>UI account sign-in</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>wifiman-desktop-dl</string>
+            </array>
+        </dict>
+    </array>
     <key>LSUIElement</key>
     <true/>
 </dict>
