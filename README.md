@@ -136,7 +136,7 @@ frontends.
 ## Layout
 
 ```
-crates/teleporter/        library and CLI
+crates/teleporter/            library and CLI
   src/sso.rs                  UI account sign-in, session file
   src/aws.rs                  SigV4 signing
   src/cloud.rs                console directory, ICE config and CONNECT calls
