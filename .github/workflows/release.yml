@@ -1,0 +1,93 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # CI's tag job starts the release this way, since the tags it creates
+  # trigger no push event.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a version tag on main
+        run: |
+          [[ "$GITHUB_REF_TYPE" == tag ]] || { echo "::error::run this on a v* tag"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "::error::$GITHUB_REF_NAME is not on main; tag a commit from main"; exit 1; }
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Build the app
+        run: ./scripts/bundle-macos.sh --universal
+      - id: version
+        name: Check the tag against Cargo.toml and zip the app
+        run: |
+          version=$(cargo pkgid -p teleporter | sed 's/.*[#@]//')
+          [[ "v$version" == "$GITHUB_REF_NAME" ]] ||
+            { echo "::error::$GITHUB_REF_NAME does not match version $version in Cargo.toml"; exit 1; }
+          # ditto keeps the bundle's signature intact, which zip(1) does not promise.
+          ditto -c -k --keepParent target/Teleporter.app "target/Teleporter-$version.zip"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: target/Teleporter-${{ steps.version.outputs.version }}.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app
+          path: target/Teleporter-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only this job can write to the repository; the build job runs dependency code.
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app
+          path: ${{ runner.temp }}/app
+      - name: Publish the release
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/app/Teleporter-$VERSION.zip" \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+
+  homebrew:
+    needs: [build, publish]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Ask the Homebrew tap to update its cask
+        env:
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::notice::TAP_DISPATCH_TOKEN is not set; the tap's daily check will pick up v$VERSION"
+            exit 0
+          fi
+          gh api repos/balcsida/homebrew-tap/dispatches \
+            -f event_type=update-teleporter -f "client_payload[version]=$VERSION"

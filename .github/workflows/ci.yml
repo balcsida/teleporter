@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Only the macOS backend exists, so the crates only build there.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  # Once main is green, tag a version that has no tag yet and start its
+  # release. A tag created with GITHUB_TOKEN triggers no workflow, so the
+  # release is started explicitly.
+  tag:
+    needs: test
+    if: github.event_name == 'push'
+    # Two quick pushes must not both try to create the tag.
+    concurrency: release-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Tag the new version and start the release
+        run: |
+          tag=v$(gh api -H "Accept: application/vnd.github.raw" \
+            "repos/$GH_REPO/contents/Cargo.toml?ref=$GITHUB_SHA" |
+            python3 -c "$READ_VERSION")
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag is already tagged"
+            exit 0
+          fi
+          gh api "repos/$GH_REPO/git/refs" --silent \
+            -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          gh workflow run release.yml --ref "$tag"
+          echo "Tagged $GITHUB_SHA as $tag and started the release"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          READ_VERSION: |
+            import sys, tomllib
+            cargo = tomllib.load(sys.stdin.buffer)
+            print(cargo["workspace"]["package"]["version"])

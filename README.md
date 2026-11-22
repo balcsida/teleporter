@@ -18,7 +18,19 @@ Router 7) from one network so far.
 
 ## Install
 
-Requires a Rust toolchain.
+With [Homebrew](https://brew.sh), the menu bar app and the `teleporter` CLI:
+
+```bash
+brew install --cask balcsida/tap/teleporter
+open -a Teleporter
+```
+
+The app is ad-hoc signed, not notarized, so the cask clears its quarantine
+flag; otherwise Gatekeeper would block the CLI on its first run. Each release
+carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations):
+`gh attestation verify Teleporter-<version>.zip --repo balcsida/teleporter`.
+
+From source, with a Rust toolchain:
 
 ```bash
 git clone https://github.com/balcsida/teleporter.git
@@ -163,3 +175,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+To release, raise `version` under `[workspace.package]` in `Cargo.toml` and
+merge to `main`. Once CI passes it tags the commit, the release workflow
+builds a universal `Teleporter-<version>.zip`, publishes it, and the Homebrew
+tap picks it up.
