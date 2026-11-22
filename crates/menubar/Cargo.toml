@@ -1,11 +1,11 @@
 [package]
-name = "teleport-split-menubar"
+name = "teleporter-menubar"
 version = "0.1.0"
 edition = "2024"
-description = "Menu bar app for teleport-split"
+description = "Menu bar app for teleporter"
 
 [dependencies]
 core-foundation = "0.10"
 tao = "0.37.3"
-teleport-split = { path = "../teleport-split" }
+teleporter = { path = "../teleporter" }
 tray-icon = "0.26.1"

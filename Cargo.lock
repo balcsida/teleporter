@@ -2644,7 +2644,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
-name = "teleport-split"
+name = "teleporter"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
@@ -2664,12 +2664,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "teleport-split-menubar"
+name = "teleporter-menubar"
 version = "0.1.0"
 dependencies = [
  "core-foundation",
  "tao",
- "teleport-split",
+ "teleporter",
  "tray-icon",
 ]
 

@@ -15,9 +15,9 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
-use teleport_split::platform::STATUS_FILE;
-use teleport_split::sso::{self, BrowserLogin};
-use teleport_split::{CONNECT_FILE, ROUTES_FILE, ROUTES_HEADER, Status, config_dir, connect};
+use teleporter::platform::STATUS_FILE;
+use teleporter::sso::{self, BrowserLogin};
+use teleporter::{CONNECT_FILE, ROUTES_FILE, ROUTES_HEADER, Status, config_dir, connect};
 
 const REFRESH: Duration = Duration::from_secs(2);
 /// How often the console list is fetched again.
@@ -28,7 +28,7 @@ const CONSOLES_AT: usize = 3;
 /// only takes it over for the duration of a sign-in the user started here.
 const LOGIN_SCHEME: &str = "wifiman-desktop-dl";
 const WIFIMAN: &str = "ui.wifiman.desktop";
-const OURSELVES: &str = "com.teleport-split-tunnel.app";
+const OURSELVES: &str = "io.github.balcsida.teleporter";
 /// How long a browser sign-in may take before the link is handed back.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 /// The sign-in page may open the link more than once; repeats are swallowed for this long.
@@ -132,7 +132,7 @@ fn main() {
                 let icon = TrayIconBuilder::new()
                     .with_menu(Box::new(menu.clone()))
                     .with_icon_templated(icon())
-                    .with_tooltip("Teleport Split Tunnel");
+                    .with_tooltip("Teleporter");
                 tray = Some(icon.build().expect("the menu bar accepts an icon"));
             }
             Event::NewEvents(_) => {}
@@ -207,7 +207,7 @@ fn main() {
                     Ok(())
                 };
                 if let Err(e) = result {
-                    eprintln!("teleport-split-menubar: {e}");
+                    eprintln!("teleporter-menubar: {e}");
                 }
             }
             Event::Opened { urls } => {
@@ -321,7 +321,7 @@ fn icon() -> Icon {
 /// Signing in needs a password and a second factor, so it happens in a
 /// terminal: a `.command` file is something Terminal runs when opened.
 fn sign_in_terminal() -> io::Result<()> {
-    let cli = std::env::current_exe()?.with_file_name("teleport-split");
+    let cli = std::env::current_exe()?.with_file_name("teleporter");
     let dir = config_dir();
     let script = dir.join("login.command");
     fs::create_dir_all(&dir)?;
@@ -335,13 +335,13 @@ fn sign_in_terminal() -> io::Result<()> {
 fn notify(message: &str) {
     // The text goes into an AppleScript string literal.
     let text = message.replace(['\\', '"'], "'").replace(['\n', '\r'], " ");
-    let script = format!("display notification \"{text}\" with title \"Teleport Split Tunnel\"");
+    let script = format!("display notification \"{text}\" with title \"Teleporter\"");
     if Command::new("/usr/bin/osascript")
         .args(["-e", &script])
         .status()
         .is_err()
     {
-        eprintln!("teleport-split-menubar: {message}");
+        eprintln!("teleporter-menubar: {message}");
     }
 }
 
@@ -355,9 +355,9 @@ fn edit_routes() -> io::Result<()> {
     Command::new("/usr/bin/open").arg("-t").arg(file).status().map(drop)
 }
 
-/// Run `teleport-split install` as root, behind the system password prompt.
+/// Run `teleporter install` as root, behind the system password prompt.
 fn install_helper() -> io::Result<()> {
-    let cli = std::env::current_exe()?.with_file_name("teleport-split");
+    let cli = std::env::current_exe()?.with_file_name("teleporter");
     if !cli.exists() {
         return Err(io::Error::other(format!("{} is missing", cli.display())));
     }

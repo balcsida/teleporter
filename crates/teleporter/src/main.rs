@@ -6,33 +6,31 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use teleport_split::connect::{self, Connection};
-use teleport_split::platform::{self, STATUS_FILE};
-use teleport_split::sso::{self, Mfa};
-use teleport_split::{
-    CONNECT_FILE, Entry, ROUTES_FILE, ROUTES_HEADER, Result, State, Status, config_dir, parse_config,
-};
+use teleporter::connect::{self, Connection};
+use teleporter::platform::{self, STATUS_FILE};
+use teleporter::sso::{self, Mfa};
+use teleporter::{CONNECT_FILE, Entry, ROUTES_FILE, ROUTES_HEADER, Result, State, Status, config_dir, parse_config};
 
 const USAGE: &str = "\
 A UniFi Teleport client that only routes your consoles' networks.
 
 Usage:
-  teleport-split login                 Sign in with your UI account
-  teleport-split login --cookie        Sign in with a browser session (for passkeys)
-  teleport-split logout                Forget the saved session
-  teleport-split ls                    List your consoles and their networks
-  sudo teleport-split up <console>     Connect in the foreground; Ctrl-C disconnects
+  teleporter login                 Sign in with your UI account
+  teleporter login --cookie        Sign in with a browser session (for passkeys)
+  teleporter logout                Forget the saved session
+  teleporter ls                    List your consoles and their networks
+  sudo teleporter up <console>     Connect in the foreground; Ctrl-C disconnects
 
-With the helper (sudo teleport-split install):
-  teleport-split connect <console>     Connect and stay connected
-  teleport-split disconnect
-  teleport-split status
-  sudo teleport-split uninstall
+With the helper (sudo teleporter install):
+  teleporter connect <console>     Connect and stay connected
+  teleporter disconnect
+  teleporter status
+  sudo teleporter uninstall
 
 Extra destinations through Teleport, besides the console's own networks:
-  teleport-split list
-  teleport-split add <network|address|host>...
-  teleport-split remove <network|address|host>...
+  teleporter list
+  teleporter add <network|address|host>...
+  teleporter remove <network|address|host>...
 ";
 
 /// How often the daemon looks at the connect file and the tunnel's health.
@@ -75,7 +73,7 @@ fn main() -> ExitCode {
                 .downcast_ref::<io::Error>()
                 .is_some_and(|e| e.kind() == io::ErrorKind::PermissionDenied);
             eprintln!(
-                "teleport-split: {e}{}",
+                "teleporter: {e}{}",
                 if denied { " (this command needs sudo)" } else { "" }
             );
             ExitCode::FAILURE
@@ -138,7 +136,7 @@ fn ls(dir: &Path) -> Result<()> {
 fn status() -> Result<()> {
     let text = match fs::read_to_string(STATUS_FILE) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            println!("The helper is not running. Run: sudo teleport-split install");
+            println!("The helper is not running. Run: sudo teleporter install");
             return Ok(());
         }
         other => other?,

@@ -38,7 +38,7 @@ pub const ROUTES_HEADER: &str =
 pub const CONNECT_FILE: &str = "connect";
 
 pub fn config_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/teleport-split")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/teleporter")
 }
 
 /// A network, normalized to its network address.

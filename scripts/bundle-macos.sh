@@ -1,27 +1,27 @@
 #!/bin/sh
-# Build "Teleport Split Tunnel.app": the menu bar app with the CLI beside it,
+# Build "Teleporter.app": the menu bar app with the CLI beside it,
 # where "Install Helper…" expects to find it.
 set -eu
 cd "$(dirname "$0")/.."
 
 cargo build --release --workspace
-version=$(cargo pkgid -p teleport-split | sed 's/.*[#@]//')
-app="target/Teleport Split Tunnel.app"
+version=$(cargo pkgid -p teleporter | sed 's/.*[#@]//')
+app="target/Teleporter.app"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
-cp target/release/teleport-split target/release/teleport-split-menubar "$app/Contents/MacOS/"
+cp target/release/teleporter target/release/teleporter-menubar "$app/Contents/MacOS/"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>teleport-split-menubar</string>
+    <string>teleporter-menubar</string>
     <key>CFBundleIdentifier</key>
-    <string>com.teleport-split-tunnel.app</string>
+    <string>io.github.balcsida.teleporter</string>
     <key>CFBundleName</key>
-    <string>Teleport Split Tunnel</string>
+    <string>Teleporter</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

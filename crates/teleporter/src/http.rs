@@ -27,7 +27,7 @@ fn agent() -> &'static ureq::Agent {
             .https_only(true)
             .timeout_global(Some(Duration::from_secs(30)))
             .timeout_connect(Some(Duration::from_secs(10)))
-            .user_agent("teleport-split/0.1")
+            .user_agent("teleporter/0.1")
             // A TLS-inspecting proxy's CA is only in the system keychain.
             .tls_config(
                 TlsConfig::builder()

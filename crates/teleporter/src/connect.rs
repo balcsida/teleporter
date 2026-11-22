@@ -10,7 +10,7 @@ use crate::tunnel::Tunnel;
 use crate::{ClientOffer, Console, Entry, Net, Result, cloud, ice, platform, signaling, sso, tunnel};
 
 /// The name the console shows for this client.
-const CLIENT_NAME: &str = "teleport-split";
+const CLIENT_NAME: &str = "teleporter";
 /// NAT traversal does not always succeed first time; the console hands out a new offer per try.
 const ATTEMPTS: usize = 4;
 
@@ -23,7 +23,7 @@ pub struct Connection {
 }
 
 fn sign_in(dir: &Path) -> Result<(crate::Session, crate::CloudConfig, crate::AwsCredentials)> {
-    let mut session = sso::load_session(dir)?.ok_or("not signed in; run: teleport-split login")?;
+    let mut session = sso::load_session(dir)?.ok_or("not signed in; run: teleporter login")?;
     if sso::refresh(&mut session)? {
         sso::save_session(dir, &session)?;
     }

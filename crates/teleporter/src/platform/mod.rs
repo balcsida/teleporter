@@ -14,4 +14,4 @@ mod macos;
 pub use macos::*;
 
 #[cfg(not(target_os = "macos"))]
-compile_error!("teleport-split only has a macOS backend so far; see src/platform/mod.rs");
+compile_error!("teleporter only has a macOS backend so far; see src/platform/mod.rs");

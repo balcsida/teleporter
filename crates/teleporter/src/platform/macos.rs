@@ -12,14 +12,14 @@ use std::time::Duration;
 
 use crate::Net;
 
-pub const STATUS_FILE: &str = "/var/run/teleport-split.status";
+pub const STATUS_FILE: &str = "/var/run/teleporter.status";
 
 const ROUTE: &str = "/sbin/route";
-const LABEL: &str = "com.teleport-split-tunnel.daemon";
-const PLIST: &str = "/Library/LaunchDaemons/com.teleport-split-tunnel.daemon.plist";
+const LABEL: &str = "io.github.balcsida.teleporter.daemon";
+const PLIST: &str = "/Library/LaunchDaemons/io.github.balcsida.teleporter.daemon.plist";
 const BIN_DIR: &str = "/Library/PrivilegedHelperTools";
-const BIN: &str = "/Library/PrivilegedHelperTools/teleport-split";
-const LOG: &str = "/var/log/teleport-split.log";
+const BIN: &str = "/Library/PrivilegedHelperTools/teleporter";
+const LOG: &str = "/var/log/teleporter.log";
 
 fn run(program: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(program).args(args).stdin(Stdio::null()).output().ok()?;

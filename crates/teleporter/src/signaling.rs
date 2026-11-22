@@ -372,7 +372,7 @@ pub fn access_request(
     let mut mqtt = Mqtt::open(&cloud.mqtt_host, &url)?;
     let answer = exchange(
         &mut mqtt,
-        &format!("teleport-split-{}", uuid_v4()?),
+        &format!("teleporter-{}", uuid_v4()?),
         &request_topic,
         &response_topic,
         &payload,

@@ -1,4 +1,4 @@
-# UniFi Teleport Split Tunnel
+# Teleporter
 
 A standalone UniFi Teleport client that routes only your console's networks
 through the tunnel. Everything else stays on your normal connection.
@@ -25,19 +25,19 @@ git clone https://github.com/balcsida/teleporter.git
 cd teleporter
 
 # CLI only
-cargo install --path crates/teleport-split
+cargo install --path crates/teleporter
 
 # or the menu bar app, with the CLI inside it
 ./scripts/bundle-macos.sh
-open "target/Teleport Split Tunnel.app"
+open "target/Teleporter.app"
 ```
 
 ## Usage
 
 ```bash
-teleport-split login                 # UI account, password, then a code or a push approval
-teleport-split ls                    # your consoles and the networks behind them
-sudo teleport-split up "My Console"  # connect in the foreground, Ctrl-C disconnects
+teleporter login                 # UI account, password, then a code or a push approval
+teleporter ls                    # your consoles and the networks behind them
+sudo teleporter up "My Console"  # connect in the foreground, Ctrl-C disconnects
 ```
 
 ### Signing in with a passkey
@@ -51,7 +51,7 @@ A passkey only works in a real browser. Two ways to use one:
   as soon as the link has arrived (or after five minutes), and passes on any
   link it did not ask for. The link cannot be pointed anywhere else: the only
   thing a client sends is a public key.
-- **CLI, `teleport-split login --cookie`.** Sign in at <https://account.ui.com>
+- **CLI, `teleporter login --cookie`.** Sign in at <https://account.ui.com>
   in your browser, copy the value of the `UBIC_AUTH` cookie from the developer
   tools (Application or Storage, then Cookies), and paste it at the prompt.
 
@@ -59,11 +59,11 @@ To stay connected without a terminal, install the helper once. It is a root
 LaunchDaemon that keeps the tunnel up and reconnects when it drops:
 
 ```bash
-sudo "$(which teleport-split)" install
-teleport-split connect "My Console"
-teleport-split status
-teleport-split disconnect
-sudo teleport-split uninstall
+sudo "$(which teleporter)" install
+teleporter connect "My Console"
+teleporter status
+teleporter disconnect
+sudo teleporter uninstall
 ```
 
 The menu bar app does the same: it lists your consoles, and clicking one
@@ -75,16 +75,16 @@ consoles. While nobody is signed in it offers "Sign In with Browser…"
 
 The console's LAN subnets come from your UI account, so there is nothing to
 configure. A subnet that overlaps the network you are sitting on is skipped,
-otherwise you would lose your local LAN. `teleport-split status` lists what was
+otherwise you would lose your local LAN. `teleporter status` lists what was
 routed and what was skipped.
 
 To send more through Teleport, for example a public address that should see
 your home IP:
 
 ```bash
-teleport-split add 203.0.113.0/24 nas.example.com
-teleport-split list
-teleport-split remove nas.example.com
+teleporter add 203.0.113.0/24 nas.example.com
+teleporter list
+teleporter remove nas.example.com
 ```
 
 Host names are resolved once per connection. DNS is not changed, so names that
@@ -94,7 +94,7 @@ only your home DNS knows need an address or `/etc/resolver`.
 
 1. **Sign in.** `login` talks to `sso.ui.com` and keeps the session cookie (or,
    after a browser sign-in, its tokens) in
-   `~/.config/teleport-split/session.json` (mode 0600). The password is not
+   `~/.config/teleporter/session.json` (mode 0600). The password is not
    stored. Short-lived AWS credentials are minted from the session when needed.
 2. **Directory.** The cloud lists your consoles with their LAN subnets.
 3. **Signaling.** An access request reaches the console over AWS IoT (MQTT),
@@ -115,11 +115,11 @@ describe each step, cross-checked against
 
 | File | Purpose |
 | --- | --- |
-| `~/.config/teleport-split/session.json` | The signed-in session |
-| `~/.config/teleport-split/connect` | Name of the console the helper should be connected to |
-| `~/.config/teleport-split/routes.conf` | Extra destinations, one per line, `#` comments |
-| `/var/run/teleport-split.status` | What the helper is doing, as `key=value` lines |
-| `/var/log/teleport-split.log` | Helper log, one line per change |
+| `~/.config/teleporter/session.json` | The signed-in session |
+| `~/.config/teleporter/connect` | Name of the console the helper should be connected to |
+| `~/.config/teleporter/routes.conf` | Extra destinations, one per line, `#` comments |
+| `/var/run/teleporter.status` | What the helper is doing, as `key=value` lines |
+| `/var/log/teleporter.log` | Helper log, one line per change |
 
 The helper runs as root, because creating a `utun` and editing routes needs it,
 and reads the first three files from the home directory of the user who
@@ -136,7 +136,7 @@ frontends.
 ## Layout
 
 ```
-crates/teleport-split/        library and CLI
+crates/teleporter/        library and CLI
   src/sso.rs                  UI account sign-in, session file
   src/aws.rs                  SigV4 signing
   src/cloud.rs                console directory, ICE config and CONNECT calls

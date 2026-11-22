@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("teleport-split-{name}-{}", uuid_v4().unwrap()));
+        let dir = std::env::temp_dir().join(format!("teleporter-{name}-{}", uuid_v4().unwrap()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

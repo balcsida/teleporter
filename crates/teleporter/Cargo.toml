@@ -1,8 +1,8 @@
 [package]
-name = "teleport-split"
+name = "teleporter"
 version = "0.1.0"
 edition = "2024"
-description = "Split tunneling for UniFi Teleport (WiFiman)"
+description = "A UniFi Teleport client that routes only your console's networks"
 
 [dependencies]
 base64 = "0.23.1"
