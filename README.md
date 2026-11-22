@@ -21,8 +21,8 @@ Router 7) from one network so far.
 Requires a Rust toolchain.
 
 ```bash
-git clone https://github.com/balcsida/unifi-teleport-split-tunnel.git
-cd unifi-teleport-split-tunnel
+git clone https://github.com/balcsida/teleporter.git
+cd teleporter
 
 # CLI only
 cargo install --path crates/teleport-split
