@@ -1,38 +1,25 @@
 # UniFi Teleport Split Tunnel
 
-UniFi Teleport in WiFiman Desktop is a full tunnel: once you connect, all of
-your traffic goes through your UniFi gateway. This utility turns it into a
-split tunnel. Only the destinations you list use Teleport, everything else
-stays on your normal connection.
+A standalone UniFi Teleport client that routes only your console's networks
+through the tunnel. Everything else stays on your normal connection.
 
-It does not reimplement Teleport. WiFiman still signs in, connects and keeps
-the tunnel alive. This tool only fixes the routing table afterwards.
+WiFiman's Teleport is a full tunnel: once you connect, all of your traffic goes
+through your UniFi gateway. This client speaks the same protocol, signs in
+with your own UI account, and adds routes only for the LANs behind the console
+you connect to. It does not need WiFiman.
 
-> This is an independent utility and is not affiliated with Ubiquiti. It
-> changes routes as root and may interrupt network access if misconfigured.
+> This is an independent, unofficial interoperability project. It is not
+> affiliated with or endorsed by Ubiquiti, and using it may be against
+> Ubiquiti's terms. Use it only with consoles you own or administer. It changes
+> routes as root and comes with no warranty.
 
-Status: macOS only for now, and new. The route logic is covered by tests, but
-the route changes have not been verified against a live Teleport session yet.
-
-## How it works
-
-WiFiman runs a bundled `wg-quick` with `AllowedIPs = 0.0.0.0/0, ::/0`, which
-adds four broad routes on the tunnel interface: `0.0.0.0/1`, `128.0.0.0/1`,
-`::/1` and `8000::/1`. A small root helper watches the routing table and, as
-soon as the Teleport tunnel appears:
-
-1. removes those four routes from the tunnel interface,
-2. adds a route through the tunnel for each destination in `routes.conf`,
-3. keeps the tunnel's own subnets routed, because WiFiman talks to the gateway
-   inside the tunnel.
-
-Only WiFiman's tunnel is touched. It is recognized by the interface name
-WiFiman gives it (`wgwfm` plus eight hex digits), so other WireGuard tunnels
-and other VPNs keep their routes.
+Status: macOS only for now, and new. The parts that can be tested offline are
+tested. The sign-in, signaling and tunnel code has not been run against a live
+account and console yet.
 
 ## Install
 
-Requires WiFiman Desktop and a Rust toolchain.
+Requires a Rust toolchain.
 
 ```bash
 git clone https://github.com/balcsida/unifi-teleport-split-tunnel.git
@@ -40,82 +27,117 @@ cd unifi-teleport-split-tunnel
 
 # CLI only
 cargo install --path crates/teleport-split
-sudo "$(which teleport-split)" install
 
 # or the menu bar app, with the CLI inside it
 ./scripts/bundle-macos.sh
-open "target/Teleport Split Tunnel.app"   # then: Install Helper…
+open "target/Teleport Split Tunnel.app"
 ```
-
-`install` copies the binary to `/Library/PrivilegedHelperTools/teleport-split`
-and registers the LaunchDaemon `com.teleport-split-tunnel.daemon`. Connect
-Teleport in WiFiman as usual afterwards.
 
 ## Usage
 
 ```bash
-teleport-split status              # what the helper is doing
-teleport-split list                # destinations routed through Teleport
-teleport-split add 192.168.1.0/24  # a network, an address or a host name
-teleport-split add nas.example.com
-teleport-split remove 10.0.0.0/8
-teleport-split off                 # back to WiFiman's full tunnel
-teleport-split on                  # split tunnel again
+teleport-split login                 # UI account, password, then a code or a push approval
+teleport-split ls                    # your consoles and the networks behind them
+sudo teleport-split up "My Console"  # connect in the foreground, Ctrl-C disconnects
+```
+
+To stay connected without a terminal, install the helper once. It is a root
+LaunchDaemon that keeps the tunnel up and reconnects when it drops:
+
+```bash
+sudo "$(which teleport-split)" install
+teleport-split connect "My Console"
+teleport-split status
+teleport-split disconnect
 sudo teleport-split uninstall
 ```
 
-Until you change it, the list is the three private ranges (`10.0.0.0/8`,
-`172.16.0.0/12`, `192.168.0.0/16`), so your home LAN is reachable without any
-setup. Routes that are more specific, like the LAN you are sitting on, still
-win over these.
+The menu bar app does the same: it lists your consoles, and clicking one
+connects or disconnects. "Sign In…" opens a terminal for the login.
 
-Host names are resolved to addresses every minute. That works for a NAS, not
-for a site behind a large CDN.
+### What gets routed
 
-The menu bar app shows the same status and has the same switch. "Edit Routes…"
-opens `routes.conf` in your text editor.
+The console's LAN subnets come from your UI account, so there is nothing to
+configure. A subnet that overlaps the network you are sitting on is skipped,
+otherwise you would lose your local LAN. `teleport-split status` lists what was
+routed and what was skipped.
+
+To send more through Teleport, for example a public address that should see
+your home IP:
+
+```bash
+teleport-split add 203.0.113.0/24 nas.example.com
+teleport-split list
+teleport-split remove nas.example.com
+```
+
+Host names are resolved once per connection. DNS is not changed, so names that
+only your home DNS knows need an address or `/etc/resolver`.
+
+## How it works
+
+1. **Sign in.** `login` talks to `sso.ui.com` and keeps the session cookie in
+   `~/.config/teleport-split/session.json` (mode 0600). The password is not
+   stored. Short-lived AWS credentials are minted from the session when needed.
+2. **Directory.** The cloud lists your consoles with their LAN subnets.
+3. **Signaling.** An access request reaches the console over AWS IoT (MQTT),
+   then the client and the console swap WireGuard keys and NAT candidates
+   through the cloud.
+4. **NAT traversal.** Authenticated STUN checks find a direct UDP path.
+5. **Tunnel.** WireGuard ([boringtun](https://github.com/cloudflare/boringtun))
+   runs over that path on a `utun` device, and a small in-tunnel heartbeat
+   keeps the console's lease alive.
+6. **Routes.** Only the selected subnets are routed to the `utun`.
+
+The protocol knowledge comes from
+[darki73/telepy-cli](https://github.com/darki73/telepy-cli) (MIT), whose docs
+describe each step, cross-checked against
+[sinnet3000/teleport-client](https://github.com/sinnet3000/teleport-client).
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `~/.config/teleport-split/routes.conf` | Destinations routed through Teleport, one per line, `#` comments |
-| `~/.config/teleport-split/disabled` | While this file exists, the helper keeps the full tunnel |
-| `/var/run/teleport-split.status` | What the helper last did, as `key=value` lines |
+| `~/.config/teleport-split/session.json` | The signed-in session |
+| `~/.config/teleport-split/connect` | Name of the console the helper should be connected to |
+| `~/.config/teleport-split/routes.conf` | Extra destinations, one per line, `#` comments |
+| `/var/run/teleport-split.status` | What the helper is doing, as `key=value` lines |
 | `/var/log/teleport-split.log` | Helper log, one line per change |
 
-The helper picks up changes to the first two within a few seconds. There is no
-other interface between the helper and its frontends.
-
-The helper runs as root and reads `routes.conf` from the home directory of the
-user who installed it. Each line must be a network, an address or a host name.
-Anything else is ignored and never reaches `route`.
+The helper runs as root, because creating a `utun` and editing routes needs it,
+and reads the first three files from the home directory of the user who
+installed it. These files are the whole interface between the helper and its
+frontends.
 
 ## Not handled
 
-- DNS. As far as I can tell from its bundled `wg-quick`, WiFiman does not
-  change DNS on macOS, and neither does this tool. Names that only your home
-  DNS knows need `/etc/resolver` or an address.
-- Remote subnets are not discovered from your UniFi account. You list them.
+- Relayed (TURN) connections. If no direct path can be punched, connecting fails.
+- IPv6 destinations, and DNS.
+- A full-tunnel mode. Use WiFiman for that.
 - The app is ad-hoc signed. There is no notarized download yet.
 
 ## Layout
 
 ```
-crates/teleport-split/        library and CLI, no dependencies
-  src/lib.rs                  config, status file, route reconciliation
-  src/platform/macos.rs       tunnel detection, route(8), launchd
+crates/teleport-split/        library and CLI
+  src/sso.rs                  UI account sign-in, session file
+  src/aws.rs                  SigV4 signing
+  src/cloud.rs                console directory, ICE config and CONNECT calls
+  src/signaling.rs            access request over AWS IoT MQTT
+  src/ice.rs                  STUN candidates and connectivity checks
+  src/tunnel.rs               WireGuard, the TUN device, the heartbeat
+  src/connect.rs              the steps above in order, and the route plan
+  src/platform/macos.rs       route(8), launchd
 crates/menubar/               macOS menu bar app (tao, tray-icon)
 scripts/bundle-macos.sh       builds the .app
 ```
 
 ### Windows
 
-Everything OS-specific is behind the `Os` trait and the `platform` module, so a
-Windows backend is one new file, `platform/windows.rs`: find WiFiman's
-WireGuard adapter, edit routes, install a Windows service. A WinUI 3 frontend
-then does what the menu bar app does: read the status file and write
-`routes.conf` and `disabled`.
+The protocol and tunnel code is portable (`tun-rs` and `boringtun` both run on
+Windows). What is missing is `platform/windows.rs`: routes and a Windows
+service. A WinUI 3 frontend then does what the menu bar app does: list the
+consoles, write `connect` and `routes.conf`, read the status file.
 
 ## Development
 
@@ -124,16 +146,3 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
-
-`cargo run -p teleport-split -- daemon --config ~/.config/teleport-split` runs
-the helper in the foreground (as root).
-
-## Related projects
-
-- [darki73/telepy-cli](https://github.com/darki73/telepy-cli) is a standalone
-  Teleport client in Python with a split tunnel mode. It reimplements the
-  protocol and signs in with your UI account instead of using WiFiman.
-- [sinnet3000/teleport-client](https://github.com/sinnet3000/teleport-client)
-  is an experimental Go client that exposes the tunnel as a SOCKS5 proxy.
-- [zscaler-split-tunnel](https://github.com/balcsida/zscaler-split-tunnel) does
-  the same job for Zscaler and is where the approach comes from.

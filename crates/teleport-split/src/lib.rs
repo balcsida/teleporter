@@ -1,49 +1,44 @@
-//! Split tunneling for UniFi Teleport.
+//! A standalone UniFi Teleport client that only routes what you ask it to.
 //!
-//! WiFiman connects Teleport as a full tunnel: its `wg-quick` installs the
-//! broad routes in [`BROAD`], which capture all traffic. [`reconcile`] removes
-//! them and routes only the configured destinations through the tunnel.
+//! It signs in with a UI account ([`sso`]), finds the consoles and their LAN
+//! subnets ([`cloud`]), asks a console for access ([`signaling`]), punches
+//! through NAT ([`ice`]) and runs WireGuard over the punched path ([`tunnel`]).
 //!
-//! Everything OS-specific sits behind [`Os`]. Frontends share no code with the
-//! daemon: they write the files in [`config_dir`] and read [`Status`].
+//! The protocol knowledge comes from darki73/telepy-cli (MIT), whose docs
+//! describe it step by step.
 
-use std::collections::BTreeSet;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::PathBuf;
 use std::str::FromStr;
-use std::{fmt, fs, io};
 
+pub mod aws;
+pub mod cloud;
+pub mod connect;
+mod http;
+pub mod ice;
+pub mod model;
 pub mod platform;
+pub mod signaling;
+pub mod sso;
+pub mod tunnel;
 
-/// The routes `wg-quick` adds for `AllowedIPs = 0.0.0.0/0, ::/0`.
-pub const BROAD: [&str; 4] = ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"];
+pub use model::{
+    AccessGrant, AwsCredentials, Candidate, ClientOffer, CloudConfig, ConnectResult, Console, IceServer, Result,
+    Session,
+};
 
-/// Destinations sent through Teleport, one per line.
+/// Extra destinations sent through Teleport, one per line. The console's own
+/// LANs are routed without being listed.
 pub const ROUTES_FILE: &str = "routes.conf";
-/// While this file exists the daemon leaves Teleport as a full tunnel.
-pub const DISABLED_FILE: &str = "disabled";
-
-/// Used until the user has a `routes.conf`: the private ranges, so a home LAN
-/// is reachable without any setup. More-specific local routes still win.
-pub const DEFAULT_ROUTES: &str = "\
-# Destinations routed through UniFi Teleport, one per line:
-# a network (192.168.1.0/24), an address (192.168.1.10) or a host name.
-# Everything else stays on your normal connection.
-10.0.0.0/8
-172.16.0.0/12
-192.168.0.0/16
-";
+/// What a new `routes.conf` starts with.
+pub const ROUTES_HEADER: &str =
+    "# Extra destinations routed through Teleport, one per line:\n# a network, an address or a host name.\n";
+/// Holds the name of the console the daemon should be connected to.
+pub const CONNECT_FILE: &str = "connect";
 
 pub fn config_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/teleport-split")
-}
-
-/// The text of `routes.conf` in `dir`, or the defaults while it does not exist.
-pub fn read_routes(dir: &Path) -> io::Result<String> {
-    match fs::read_to_string(dir.join(ROUTES_FILE)) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(DEFAULT_ROUTES.into()),
-        other => other,
-    }
 }
 
 /// A network, normalized to its network address.
@@ -79,7 +74,7 @@ impl Net {
 
 impl FromStr for Net {
     type Err = ();
-    fn from_str(s: &str) -> Result<Net, ()> {
+    fn from_str(s: &str) -> std::result::Result<Net, ()> {
         match s.split_once('/') {
             Some((addr, prefix)) => {
                 // u8::from_str accepts a leading '+', which route(8) would not.
@@ -118,15 +113,10 @@ impl fmt::Display for Entry {
 impl FromStr for Entry {
     type Err = ();
     /// The trust boundary: the root daemon passes these to route(8) and the resolver.
-    fn from_str(s: &str) -> Result<Entry, ()> {
+    fn from_str(s: &str) -> std::result::Result<Entry, ()> {
         if let Ok(net) = s.parse::<Net>() {
-            // A /0 or a broad route would be the full tunnel again, and the
-            // daemon would add and sweep it in turns; that is what `off` is for.
-            return if net.prefix == 0 || broad().any(|b| b == net) {
-                Err(())
-            } else {
-                Ok(Entry::Net(net))
-            };
+            // A /0 would replace the default route, the opposite of a split tunnel.
+            return if net.prefix == 0 { Err(()) } else { Ok(Entry::Net(net)) };
         }
         let label = |l: &str| {
             !l.is_empty()
@@ -168,39 +158,40 @@ pub fn parse_config(text: &str) -> Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum State {
-    /// Teleport is not connected.
     #[default]
     Disconnected,
-    /// Only the configured routes use Teleport.
-    Split,
-    /// Teleport carries all traffic, as WiFiman set it up.
-    Full,
+    Connecting,
+    Connected,
+    /// The last attempt failed; the daemon will try again.
+    Failed,
 }
 
-/// What the daemon last did. Written as `key=value` lines so that any frontend
+/// What the daemon is doing. Written as `key=value` lines so that any frontend
 /// can read it without a parser dependency.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
     pub state: State,
+    pub console: String,
     pub iface: String,
-    /// Destinations currently routed through Teleport.
+    /// Destinations routed through Teleport.
     pub routes: Vec<String>,
-    /// Destinations that could not be routed or resolved.
-    pub failed: Vec<String>,
-    pub bad_lines: Vec<usize>,
+    /// Destinations left alone because they overlap a local network or could not be routed.
+    pub skipped: Vec<String>,
+    pub error: String,
 }
 
 impl Status {
     /// One line for a person.
     pub fn summary(&self) -> String {
-        let failed = match self.failed.len() {
-            0 => String::new(),
-            n => format!(", {n} failed"),
-        };
         match self.state {
-            State::Disconnected => "Teleport is not connected".into(),
-            State::Full => format!("Full tunnel on {}{failed}", self.iface),
-            State::Split => format!("Split tunnel on {}: {} routes{failed}", self.iface, self.routes.len()),
+            State::Disconnected => "Not connected".into(),
+            State::Connecting => format!("Connecting to {}…", self.console),
+            State::Connected => format!("Connected to {}: {} routes", self.console, self.routes.len()),
+            State::Failed => format!(
+                "Could not connect to {}: {}",
+                self.console,
+                self.error.replace(['\n', '\r'], " ")
+            ),
         }
     }
 }
@@ -209,30 +200,36 @@ impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let state = match self.state {
             State::Disconnected => "disconnected",
-            State::Split => "split",
-            State::Full => "full",
+            State::Connecting => "connecting",
+            State::Connected => "connected",
+            State::Failed => "failed",
         };
+        // One value per line: an error text must not be able to forge another key.
+        let line = |v: &str| v.replace(['\n', '\r'], " ");
         writeln!(f, "state={state}")?;
+        writeln!(f, "console={}", line(&self.console))?;
         writeln!(f, "interface={}", self.iface)?;
+        writeln!(f, "error={}", line(&self.error))?;
         self.routes.iter().try_for_each(|r| writeln!(f, "route={r}"))?;
-        self.failed.iter().try_for_each(|r| writeln!(f, "failed={r}"))?;
-        self.bad_lines.iter().try_for_each(|n| writeln!(f, "bad_line={n}"))
+        self.skipped.iter().try_for_each(|r| writeln!(f, "skipped={r}"))
     }
 }
 
 impl FromStr for Status {
     type Err = ();
-    fn from_str(s: &str) -> Result<Status, ()> {
+    fn from_str(s: &str) -> std::result::Result<Status, ()> {
         let mut status = Status::default();
         for line in s.lines() {
             match line.split_once('=').ok_or(())? {
                 ("state", "disconnected") => status.state = State::Disconnected,
-                ("state", "split") => status.state = State::Split,
-                ("state", "full") => status.state = State::Full,
+                ("state", "connecting") => status.state = State::Connecting,
+                ("state", "connected") => status.state = State::Connected,
+                ("state", "failed") => status.state = State::Failed,
+                ("console", v) => status.console = v.into(),
                 ("interface", v) => status.iface = v.into(),
+                ("error", v) => status.error = v.into(),
                 ("route", v) => status.routes.push(v.into()),
-                ("failed", v) => status.failed.push(v.into()),
-                ("bad_line", v) => status.bad_lines.push(v.parse().map_err(drop)?),
+                ("skipped", v) => status.skipped.push(v.into()),
                 _ => {} // a newer daemon may write keys this build does not know
             }
         }
@@ -240,143 +237,9 @@ impl FromStr for Status {
     }
 }
 
-/// The Teleport tunnel as the OS sees it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Tunnel {
-    pub iface: String,
-    /// Networks of the tunnel's own addresses. WiFiman talks to the gateway
-    /// inside the tunnel, so these stay routed in split mode.
-    pub nets: Vec<Net>,
-}
-
-/// The platform boundary. A backend only has to find WiFiman's tunnel and edit
-/// the routing table; [`reconcile`] decides what to change.
-pub trait Os {
-    /// WiFiman's tunnel, if Teleport is connected. Must never return another
-    /// VPN's interface: its broad routes would be removed.
-    fn tunnel(&self) -> Option<Tunnel>;
-    /// The interface the routing table sends `net` to.
-    fn route_iface(&self, net: Net) -> Option<String>;
-    fn add_route(&mut self, net: Net, iface: &str);
-    fn delete_route(&mut self, net: Net, iface: &str);
-    fn resolve(&self, host: &str) -> Vec<IpAddr> {
-        (host, 0)
-            .to_socket_addrs()
-            .map(|addrs| addrs.map(|a| a.ip()).collect())
-            .unwrap_or_default()
-    }
-}
-
-/// The routes this process added, and on which tunnel.
-// shortcut: kept in memory only, so routes added before a daemon restart are
-// not pruned until Teleport reconnects; persist it if that ever matters.
-#[derive(Debug, Default)]
-pub struct Applied {
-    iface: String,
-    nets: BTreeSet<Net>,
-}
-
-fn broad() -> impl Iterator<Item = Net> {
-    BROAD.iter().map(|b| b.parse().expect("BROAD holds valid networks"))
-}
-
-/// Bring the routing table in line with `config`: split tunnel if `split`,
-/// otherwise WiFiman's full tunnel. Safe to call repeatedly.
-pub fn reconcile(os: &mut impl Os, config: &Config, split: bool, applied: &mut Applied) -> Status {
-    let Some(tunnel) = os.tunnel() else {
-        *applied = Applied::default();
-        return Status {
-            bad_lines: config.bad_lines.clone(),
-            ..Status::default()
-        };
-    };
-    let iface = tunnel.iface.as_str();
-    if applied.iface != iface {
-        // A new tunnel: the old interface took its routes with it.
-        *applied = Applied {
-            iface: iface.into(),
-            nets: BTreeSet::new(),
-        };
-    }
-    let mut status = Status {
-        iface: iface.into(),
-        bad_lines: config.bad_lines.clone(),
-        ..Status::default()
-    };
-
-    if !split {
-        for net in std::mem::take(&mut applied.nets) {
-            os.delete_route(net, iface);
-        }
-        // shortcut: restores all of BROAD because WiFiman always allows ::/0;
-        // remember what was swept if it ever connects IPv4-only.
-        for net in broad() {
-            if os.route_iface(net).as_deref() != Some(iface) {
-                os.add_route(net, iface);
-                if os.route_iface(net).as_deref() != Some(iface) {
-                    status.failed.push(net.to_string());
-                }
-            }
-        }
-        status.state = State::Full;
-        return status;
-    }
-
-    for net in broad() {
-        if os.route_iface(net).as_deref() == Some(iface) {
-            os.delete_route(net, iface);
-            // Never claim a split tunnel while a broad route is still in place.
-            if os.route_iface(net).as_deref() == Some(iface) {
-                status.failed.push(net.to_string());
-            }
-        }
-    }
-
-    let mut desired: BTreeSet<Net> = tunnel.nets.iter().copied().collect();
-    let mut unresolved = false;
-    for entry in &config.entries {
-        match entry {
-            Entry::Net(net) => drop(desired.insert(*net)),
-            Entry::Host(host) => {
-                let addrs = os.resolve(host);
-                if addrs.is_empty() {
-                    unresolved = true;
-                    status.failed.push(host.clone());
-                }
-                desired.extend(addrs.into_iter().map(Net::host));
-            }
-        }
-    }
-
-    for &net in &desired {
-        if os.route_iface(net).as_deref() != Some(iface) {
-            os.add_route(net, iface);
-            // route(8) exits 0 even when it fails, so ask the table instead.
-            if os.route_iface(net).as_deref() != Some(iface) {
-                status.failed.push(net.to_string());
-                continue;
-            }
-            applied.nets.insert(net);
-        }
-        status.routes.push(net.to_string());
-    }
-
-    // A name that failed to resolve keeps its old routes rather than flapping.
-    if !unresolved {
-        for net in applied.nets.difference(&desired).copied().collect::<Vec<_>>() {
-            os.delete_route(net, iface);
-            applied.nets.remove(&net);
-        }
-    }
-
-    status.state = State::Split;
-    status
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     fn net(s: &str) -> Net {
         s.parse().unwrap()
@@ -396,7 +259,7 @@ mod tests {
     #[test]
     fn config_rejects_what_must_not_reach_route() {
         let config = parse_config(
-            "# comment\n192.168.1.0/24  # lan\n\nNAS.Home.Example\n0.0.0.0/0\n-interface en0\n1.2.3\na;b\n10.0.0.5\n128.9.9.9/1\n",
+            "# comment\n192.168.1.0/24  # lan\n\nNAS.Home.Example\n0.0.0.0/0\n-interface en0\n1.2.3\na;b\n10.0.0.5\n",
         );
         assert_eq!(
             config.entries,
@@ -406,184 +269,30 @@ mod tests {
                 Entry::Net(net("10.0.0.5/32"))
             ]
         );
-        assert_eq!(config.bad_lines, [5, 6, 7, 8, 10]);
+        assert_eq!(config.bad_lines, [5, 6, 7, 8]);
         assert_eq!(config.entries[2].to_string(), "10.0.0.5");
-        assert!(parse_config(DEFAULT_ROUTES).bad_lines.is_empty());
-        assert_eq!(parse_config(DEFAULT_ROUTES).entries.len(), 3);
     }
 
     #[test]
-    fn status_round_trips() {
+    fn status_round_trips_and_stays_one_value_per_line() {
         let status = Status {
-            state: State::Split,
-            iface: "utun8".into(),
+            state: State::Failed,
+            console: "Home".into(),
+            iface: "utun7".into(),
             routes: vec!["192.168.1.0/24".into()],
-            failed: vec!["nas.home.example".into()],
-            bad_lines: vec![3],
+            skipped: vec!["10.0.0.0/8".into()],
+            error: "timed out".into(),
         };
         assert_eq!(status.to_string().parse(), Ok(status));
-        assert_eq!("state=full\nfuture=1\n".parse::<Status>().unwrap().state, State::Full);
-    }
-
-    /// A routing table with exact-match lookups, plus a default route on en0.
-    #[derive(Default)]
-    struct Fake {
-        tunnel: Option<Tunnel>,
-        table: BTreeMap<Net, String>,
-        dns: BTreeMap<&'static str, Vec<IpAddr>>,
-        /// The table rejects every change, as it does without root.
-        read_only: bool,
-    }
-
-    impl Fake {
-        /// Teleport connected the way WiFiman leaves it.
-        fn connected() -> Fake {
-            let mut fake = Fake {
-                tunnel: Some(Tunnel {
-                    iface: "utun8".into(),
-                    nets: vec![net("fd37::/64")],
-                }),
-                ..Fake::default()
-            };
-            fake.table.extend(broad().map(|b| (b, "utun8".to_string())));
-            fake.table.insert(net("fd37::/64"), "utun8".into());
-            fake
-        }
-
-        fn on_tunnel(&self) -> Vec<String> {
-            self.table
-                .iter()
-                .filter(|(_, i)| *i == "utun8")
-                .map(|(n, _)| n.to_string())
-                .collect()
-        }
-    }
-
-    impl Os for Fake {
-        fn tunnel(&self) -> Option<Tunnel> {
-            self.tunnel.clone()
-        }
-        fn route_iface(&self, net: Net) -> Option<String> {
-            Some(self.table.get(&net).cloned().unwrap_or_else(|| "en0".into()))
-        }
-        fn add_route(&mut self, net: Net, iface: &str) {
-            // Like the kernel, refuse to replace an existing route.
-            if !self.read_only {
-                self.table.entry(net).or_insert_with(|| iface.into());
-            }
-        }
-        fn delete_route(&mut self, net: Net, iface: &str) {
-            if !self.read_only && self.table.get(&net).is_some_and(|i| i == iface) {
-                self.table.remove(&net);
-            }
-        }
-        fn resolve(&self, host: &str) -> Vec<IpAddr> {
-            self.dns.get(host).cloned().unwrap_or_default()
-        }
-    }
-
-    #[test]
-    fn split_sweeps_broad_routes_and_adds_only_configured_ones() {
-        let mut os = Fake::connected();
-        os.dns.insert("nas.home.example", vec!["203.0.113.7".parse().unwrap()]);
-        // The LAN the machine sits on overlaps a configured route.
-        os.table.insert(net("192.168.50.0/24"), "en0".into());
-        let config = parse_config("192.168.1.0/24\n192.168.50.0/24\nnas.home.example\n");
-        let mut applied = Applied::default();
-
-        let status = reconcile(&mut os, &config, true, &mut applied);
-
-        assert_eq!(status.state, State::Split);
-        assert_eq!(os.on_tunnel(), ["192.168.1.0/24", "203.0.113.7/32", "fd37::/64"]);
-        assert_eq!(status.routes, ["192.168.1.0/24", "203.0.113.7/32", "fd37::/64"]);
-        assert_eq!(status.failed, ["192.168.50.0/24"]);
-        assert_eq!(os.table[&net("192.168.50.0/24")], "en0");
-
-        // A second pass changes nothing.
-        let table = os.table.clone();
-        assert_eq!(reconcile(&mut os, &config, true, &mut applied).routes, status.routes);
-        assert_eq!(os.table, table);
-    }
-
-    #[test]
-    fn changes_the_table_rejects_are_reported() {
-        let mut os = Fake {
-            read_only: true,
-            ..Fake::connected()
-        };
-        let status = reconcile(
-            &mut os,
-            &parse_config("192.168.1.0/24\n"),
-            true,
-            &mut Applied::default(),
-        );
         assert_eq!(
-            status.failed,
-            ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1", "192.168.1.0/24"]
-        );
-        assert_eq!(status.routes, ["fd37::/64"]);
-    }
-
-    #[test]
-    fn removed_entries_are_pruned_unless_a_name_fails_to_resolve() {
-        let mut os = Fake::connected();
-        os.dns.insert("nas.home.example", vec!["203.0.113.7".parse().unwrap()]);
-        let mut applied = Applied::default();
-        reconcile(
-            &mut os,
-            &parse_config("192.168.1.0/24\nnas.home.example\n"),
-            true,
-            &mut applied,
+            "state=connected\nfuture=1\n".parse::<Status>().unwrap().state,
+            State::Connected
         );
 
-        os.dns.clear();
-        let status = reconcile(&mut os, &parse_config("nas.home.example\n"), true, &mut applied);
-        assert_eq!(status.failed, ["nas.home.example"]);
-        assert_eq!(os.on_tunnel(), ["192.168.1.0/24", "203.0.113.7/32", "fd37::/64"]);
-
-        reconcile(&mut os, &parse_config(""), true, &mut applied);
-        assert_eq!(os.on_tunnel(), ["fd37::/64"]);
-    }
-
-    #[test]
-    fn off_restores_the_full_tunnel() {
-        let mut os = Fake::connected();
-        let before = os.table.clone();
-        let config = parse_config("192.168.1.0/24\n");
-        let mut applied = Applied::default();
-        reconcile(&mut os, &config, true, &mut applied);
-        assert_ne!(os.table, before);
-
-        let status = reconcile(&mut os, &config, false, &mut applied);
-
-        assert_eq!(status.state, State::Full);
-        assert_eq!(os.table, before);
-    }
-
-    #[test]
-    fn other_vpns_and_a_missing_tunnel_are_left_alone() {
-        let mut os = Fake::default();
-        os.table.extend(broad().map(|b| (b, "utun3".to_string())));
-        let before = os.table.clone();
-        let mut applied = Applied::default();
-
-        // Not connected: nothing is touched.
-        let status = reconcile(&mut os, &parse_config("192.168.1.0/24\n"), true, &mut applied);
-        assert_eq!(status.state, State::Disconnected);
-        assert_eq!(os.table, before);
-
-        // Connected, but another VPN owns the broad routes: they stay.
-        os.tunnel = Some(Tunnel {
-            iface: "utun8".into(),
-            nets: vec![],
-        });
-        reconcile(&mut os, &parse_config("192.168.1.0/24\n"), true, &mut applied);
-        assert!(broad().all(|b| os.table[&b] == "utun3"));
-        assert_eq!(os.on_tunnel(), ["192.168.1.0/24"]);
-
-        // Nor can `off` take them over; it says so instead of claiming success.
-        let status = reconcile(&mut os, &parse_config(""), false, &mut applied);
-        assert_eq!(status.failed.len(), 4);
-        assert!(broad().all(|b| os.table[&b] == "utun3"));
+        let forged = Status {
+            error: "x\nstate=connected".into(),
+            ..Status::default()
+        };
+        assert_eq!(forged.to_string().parse::<Status>().unwrap().state, State::Disconnected);
     }
 }

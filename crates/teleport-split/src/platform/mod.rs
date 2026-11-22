@@ -1,12 +1,12 @@
 //! One module per operating system, each exporting the same names:
 //!
-//! - `System`: the [`Os`](crate::Os) implementation
 //! - `STATUS_FILE`: where the daemon writes [`Status`](crate::Status)
-//! - `watch_routes(tx)`: sends on `tx` whenever the routing table changes
+//! - `add_route(net, iface)`: route a network through the tunnel interface
+//! - `local_nets()`: the LANs this machine is attached to
 //! - `install(config_dir)` / `uninstall()`: register the daemon with the OS
 //!
-//! A Windows backend (WiFiman's WireGuard service, `route.exe`, a Windows
-//! service) goes in `windows.rs` and needs nothing outside this directory.
+//! A Windows backend goes in `windows.rs` and needs nothing outside this
+//! directory; the tunnel itself (`tun-rs`, `boringtun`) is already portable.
 
 #[cfg(target_os = "macos")]
 mod macos;

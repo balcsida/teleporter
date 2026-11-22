@@ -1,48 +1,66 @@
-//! The macOS menu bar frontend. It holds no logic of its own: it reads the
-//! daemon's status file and edits the same config files as the CLI, which is
-//! all a WinUI 3 frontend has to do as well.
+//! The macOS menu bar frontend. It lists the account's consoles, and otherwise
+//! holds no logic: it reads the helper's status file and writes the same files
+//! as the CLI, which is all a WinUI 3 frontend has to do as well.
 
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use std::{fs, io, thread};
 
 use tao::event::Event;
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 use teleport_split::platform::STATUS_FILE;
-use teleport_split::{DISABLED_FILE, ROUTES_FILE, Status, config_dir, read_routes};
+use teleport_split::{CONNECT_FILE, ROUTES_FILE, ROUTES_HEADER, Status, config_dir, connect};
 
 const REFRESH: Duration = Duration::from_secs(2);
+/// How often the console list is fetched again.
+const RELOAD: Duration = Duration::from_secs(120);
+/// Where the console entries start: after the status line, the account line and a separator.
+const CONSOLES_AT: usize = 3;
+
+enum AppEvent {
+    Menu(MenuEvent),
+    /// The account's console names, or why they could not be listed.
+    Consoles(Result<Vec<String>, String>),
+}
 
 fn main() {
-    let mut event_loop = EventLoopBuilder::<MenuEvent>::with_user_event().build();
+    let mut event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
     // A menu bar app: no Dock icon, no main window.
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     let proxy = event_loop.create_proxy();
-    MenuEvent::set_event_handler(Some(move |event| drop(proxy.send_event(event))));
+    let menu_proxy = proxy.clone();
+    MenuEvent::set_event_handler(Some(move |event| drop(menu_proxy.send_event(AppEvent::Menu(event)))));
 
     let status = MenuItem::new("", false, None);
-    let split = CheckMenuItem::new("Split Tunnel", true, true, None);
-    let routes = MenuItem::new("Edit Routes…", true, None);
+    let account = MenuItem::new("Loading consoles…", false, None);
+    let sign_in = MenuItem::new("Sign In…", true, None);
+    let routes = MenuItem::new("Edit Extra Routes…", true, None);
     let install = MenuItem::new("", true, None);
     let menu = Menu::new();
     menu.append_items(&[
         &status,
+        &account,
         &PredefinedMenuItem::separator(),
-        &split,
+        &PredefinedMenuItem::separator(),
+        &sign_in,
         &routes,
-        &PredefinedMenuItem::separator(),
         &install,
         &PredefinedMenuItem::quit(None),
     ])
     .expect("a new menu accepts items");
 
     let mut tray = None;
+    let mut consoles: Vec<CheckMenuItem> = Vec::new();
+    let mut session_seen = None;
+    let mut loaded = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + REFRESH);
+        let dir = config_dir();
         match event {
             // The tray icon may only be created once the event loop runs.
             Event::NewEvents(_) if tray.is_none() => {
@@ -53,9 +71,38 @@ fn main() {
                 tray = Some(icon.build().expect("the menu bar accepts an icon"));
             }
             Event::NewEvents(_) => {}
-            Event::UserEvent(event) => {
-                let result = if event.id == *split.id() {
-                    set_split(split.is_checked())
+            Event::UserEvent(AppEvent::Consoles(found)) => {
+                for item in consoles.drain(..) {
+                    let _ = menu.remove(&item);
+                }
+                match found {
+                    Ok(names) => {
+                        account.set_text(if names.is_empty() {
+                            "No consoles on this account"
+                        } else {
+                            "Consoles"
+                        });
+                        consoles = names
+                            .iter()
+                            .map(|name| CheckMenuItem::new(name, true, false, None))
+                            .collect();
+                        for (i, item) in consoles.iter().enumerate() {
+                            let _ = menu.insert(item, CONSOLES_AT + i);
+                        }
+                    }
+                    Err(e) => account.set_text(e),
+                }
+            }
+            Event::UserEvent(AppEvent::Menu(event)) => {
+                let result = if let Some(console) = consoles.iter().find(|c| *c.id() == event.id) {
+                    // muda has already flipped the check mark: checked means "connect to this one".
+                    if console.is_checked() {
+                        fs::create_dir_all(&dir).and_then(|()| fs::write(dir.join(CONNECT_FILE), console.text()))
+                    } else {
+                        fs::remove_file(dir.join(CONNECT_FILE))
+                    }
+                } else if event.id == *sign_in.id() {
+                    sign_in_terminal()
                 } else if event.id == *routes.id() {
                     edit_routes()
                 } else if event.id == *install.id() {
@@ -70,19 +117,39 @@ fn main() {
             _ => return,
         }
 
-        let dir = config_dir();
+        // A new session file means someone signed in (or out). Otherwise the list is only
+        // refreshed now and then, which also retries after a failure.
+        let session = fs::metadata(dir.join("session.json")).and_then(|m| m.modified()).ok();
+        if session_seen != Some(session) || loaded.elapsed() >= RELOAD {
+            session_seen = Some(session);
+            loaded = Instant::now();
+            load_consoles(proxy.clone());
+        }
         let installed = fs::read_to_string(STATUS_FILE).ok();
         status.set_text(match installed.as_deref().map(str::parse::<Status>) {
             None => "Helper not installed".into(),
             Some(Ok(status)) => status.summary(),
             Some(Err(())) => "Helper status is unreadable".into(),
         });
-        split.set_checked(!dir.join(DISABLED_FILE).exists());
+        let wanted = fs::read_to_string(dir.join(CONNECT_FILE)).unwrap_or_default();
+        for console in &consoles {
+            console.set_checked(console.text() == wanted.trim());
+        }
         install.set_text(if installed.is_some() {
             "Reinstall Helper…"
         } else {
             "Install Helper…"
         });
+    });
+}
+
+/// List the consoles off the main thread; the answer comes back as an event.
+fn load_consoles(proxy: EventLoopProxy<AppEvent>) {
+    thread::spawn(move || {
+        let found = connect::consoles(&config_dir())
+            .map(|consoles| consoles.into_iter().map(|c| c.name).collect())
+            .map_err(|e| e.to_string());
+        let _ = proxy.send_event(AppEvent::Consoles(found));
     });
 }
 
@@ -112,17 +179,17 @@ fn icon() -> Icon {
     Icon::from_rgba(rgba, SIZE, SIZE).expect("the buffer matches its dimensions")
 }
 
-fn set_split(on: bool) -> io::Result<()> {
+/// Signing in needs a password and a second factor, so it happens in a
+/// terminal: a `.command` file is something Terminal runs when opened.
+fn sign_in_terminal() -> io::Result<()> {
+    let cli = std::env::current_exe()?.with_file_name("teleport-split");
     let dir = config_dir();
-    if on {
-        match fs::remove_file(dir.join(DISABLED_FILE)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
-    } else {
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join(DISABLED_FILE), "")
-    }
+    let script = dir.join("login.command");
+    fs::create_dir_all(&dir)?;
+    let quoted = cli.display().to_string().replace('\'', "'\\''");
+    fs::write(&script, format!("#!/bin/sh\nexec '{quoted}' login\n"))?;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+    Command::new("/usr/bin/open").arg(script).status().map(drop)
 }
 
 fn edit_routes() -> io::Result<()> {
@@ -130,7 +197,7 @@ fn edit_routes() -> io::Result<()> {
     let file = dir.join(ROUTES_FILE);
     if !file.exists() {
         fs::create_dir_all(&dir)?;
-        fs::write(&file, read_routes(&dir)?)?;
+        fs::write(&file, ROUTES_HEADER)?;
     }
     Command::new("/usr/bin/open").arg("-t").arg(file).status().map(drop)
 }
