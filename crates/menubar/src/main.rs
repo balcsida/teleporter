@@ -83,8 +83,8 @@ fn release_link(previous: Option<String>) {
 
 enum AppEvent {
     Menu(MenuEvent),
-    /// The account's console names, or why they could not be listed.
-    Consoles(Result<Vec<String>, String>),
+    /// Who is signed in and their console names, or why that is not known.
+    Consoles(Result<(String, Vec<String>), String>),
 }
 
 fn main() {
@@ -96,7 +96,7 @@ fn main() {
     MenuEvent::set_event_handler(Some(move |event| drop(menu_proxy.send_event(AppEvent::Menu(event)))));
 
     let status = MenuItem::new("", false, None);
-    let account = MenuItem::new("Loading consoles…", false, None);
+    let account = MenuItem::new("Loading…", false, None);
     let sign_in = MenuItem::new("Sign In in Terminal…", true, None);
     let sign_in_browser = MenuItem::new("Sign In with Browser…", true, None);
     let routes = MenuItem::new("Edit Extra Routes…", true, None);
@@ -142,12 +142,9 @@ fn main() {
                     let _ = menu.remove(&item);
                 }
                 match found {
-                    Ok(names) => {
-                        account.set_text(if names.is_empty() {
-                            "No consoles on this account"
-                        } else {
-                            "Consoles"
-                        });
+                    Ok((user, names)) => {
+                        let none = if names.is_empty() { ": no consoles" } else { "" };
+                        account.set_text(format!("Signed in as {user}{none}"));
                         consoles = names
                             .iter()
                             .map(|name| CheckMenuItem::new(name, true, false, None))
@@ -264,9 +261,14 @@ fn main() {
 /// List the consoles off the main thread; the answer comes back as an event.
 fn load_consoles(proxy: EventLoopProxy<AppEvent>) {
     thread::spawn(move || {
-        let found = connect::consoles(&config_dir())
-            .map(|consoles| consoles.into_iter().map(|c| c.name).collect())
-            .map_err(|e| e.to_string());
+        let dir = config_dir();
+        let found = match sso::load_session(&dir) {
+            Ok(Some(session)) => connect::consoles(&dir)
+                .map(|consoles| (session.user.clone(), consoles.into_iter().map(|c| c.name).collect()))
+                .map_err(|e| format!("{}: {e}", session.user)),
+            Ok(None) => Err("Not signed in".to_string()),
+            Err(e) => Err(e.to_string()),
+        };
         let _ = proxy.send_event(AppEvent::Consoles(found));
     });
 }
