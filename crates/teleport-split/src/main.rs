@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -17,6 +18,7 @@ A UniFi Teleport client that only routes your consoles' networks.
 
 Usage:
   teleport-split login                 Sign in with your UI account
+  teleport-split login --cookie        Sign in with a browser session (for passkeys)
   teleport-split logout                Forget the saved session
   teleport-split ls                    List your consoles and their networks
   sudo teleport-split up <console>     Connect in the foreground; Ctrl-C disconnects
@@ -45,6 +47,7 @@ fn main() -> ExitCode {
     let dir = config_dir();
     let result = match args.as_slice() {
         ["login"] => login(&dir),
+        ["login", "--cookie"] => login_cookie(&dir),
         ["logout"] => sso::clear_session(&dir),
         ["ls"] => ls(&dir),
         ["up", console] => daemon(&dir, Some(console)),
@@ -102,6 +105,22 @@ fn login(dir: &Path) -> Result<()> {
         let code = prompt("6-digit code, or Enter to approve the push notification: ")?;
         Ok(if code.is_empty() { Mfa::Push } else { Mfa::Totp(code) })
     })?;
+    sso::save_session(dir, &session)?;
+    println!("Signed in as {}.", session.user);
+    Ok(())
+}
+
+/// For accounts that sign in with a passkey, which only a browser can do:
+/// the session is the browser's `UBIC_AUTH` cookie.
+fn login_cookie(dir: &Path) -> Result<()> {
+    let value = rpassword::prompt_password("UBIC_AUTH cookie from account.ui.com (hidden): ")?;
+    let value = value.trim();
+    // It goes into a Cookie header as is.
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_graphic() && b != b';' && b != b',') {
+        return Err("that does not look like a cookie value".into());
+    }
+    let cookies = BTreeMap::from([("UBIC_AUTH".to_string(), value.to_string())]);
+    let session = sso::session_from_cookies(cookies, sso::load_session(dir)?)?;
     sso::save_session(dir, &session)?;
     println!("Signed in as {}.", session.user);
     Ok(())

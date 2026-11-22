@@ -13,9 +13,8 @@ you connect to. It does not need WiFiman.
 > Ubiquiti's terms. Use it only with consoles you own or administer. It changes
 > routes as root and comes with no warranty.
 
-Status: macOS only for now, and new. The parts that can be tested offline are
-tested. The sign-in, signaling and tunnel code has not been run against a live
-account and console yet.
+Status: macOS only for now, and new. It has connected to one console (a Dream
+Router 7) from one network so far.
 
 ## Install
 
@@ -41,6 +40,21 @@ teleport-split ls                    # your consoles and the networks behind the
 sudo teleport-split up "My Console"  # connect in the foreground, Ctrl-C disconnects
 ```
 
+### Signing in with a passkey
+
+A passkey only works in a real browser. Two ways to use one:
+
+- **Menu bar app, "Sign In with Browser…".** This opens Ubiquiti's own sign-in
+  in your default browser, the same one WiFiman Desktop uses. That sign-in ends
+  in a `wifiman-desktop-dl://` link, which belongs to WiFiman. The app takes
+  the link over only after you choose this menu item, gives it back to WiFiman
+  as soon as the link has arrived (or after five minutes), and passes on any
+  link it did not ask for. The link cannot be pointed anywhere else: the only
+  thing a client sends is a public key.
+- **CLI, `teleport-split login --cookie`.** Sign in at <https://account.ui.com>
+  in your browser, copy the value of the `UBIC_AUTH` cookie from the developer
+  tools (Application or Storage, then Cookies), and paste it at the prompt.
+
 To stay connected without a terminal, install the helper once. It is a root
 LaunchDaemon that keeps the tunnel up and reconnects when it drops:
 
@@ -53,7 +67,8 @@ sudo teleport-split uninstall
 ```
 
 The menu bar app does the same: it lists your consoles, and clicking one
-connects or disconnects. "Sign In…" opens a terminal for the login.
+connects or disconnects. "Sign In in Terminal…" runs `login` in a terminal,
+"Sign In with Browser…" is described above.
 
 ### What gets routed
 
@@ -76,7 +91,8 @@ only your home DNS knows need an address or `/etc/resolver`.
 
 ## How it works
 
-1. **Sign in.** `login` talks to `sso.ui.com` and keeps the session cookie in
+1. **Sign in.** `login` talks to `sso.ui.com` and keeps the session cookie (or,
+   after a browser sign-in, its tokens) in
    `~/.config/teleport-split/session.json` (mode 0600). The password is not
    stored. Short-lived AWS credentials are minted from the session when needed.
 2. **Directory.** The cloud lists your consoles with their LAN subnets.
