@@ -22,12 +22,12 @@ With [Homebrew](https://brew.sh), the menu bar app and the `teleporter` CLI:
 
 ```bash
 brew install --cask balcsida/tap/teleporter
+# The app is ad-hoc signed, not notarized: allow it past Gatekeeper, once.
+xattr -dr com.apple.quarantine /Applications/Teleporter.app
 open -a Teleporter
 ```
 
-The app is ad-hoc signed, not notarized, so the cask clears its quarantine
-flag; otherwise Gatekeeper would block the CLI on its first run. Each release
-carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations):
+Each release carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations):
 `gh attestation verify Teleporter-<version>.zip --repo balcsida/teleporter`.
 
 From source, with a Rust toolchain:
