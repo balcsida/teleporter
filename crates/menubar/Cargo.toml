@@ -1,0 +1,10 @@
+[package]
+name = "teleport-split-menubar"
+version = "0.1.0"
+edition = "2024"
+description = "Menu bar app for teleport-split"
+
+[dependencies]
+tao = "0.37.3"
+teleport-split = { path = "../teleport-split" }
+tray-icon = "0.26.1"
