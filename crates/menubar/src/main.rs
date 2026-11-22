@@ -83,8 +83,8 @@ fn release_link(previous: Option<String>) {
 
 enum AppEvent {
     Menu(MenuEvent),
-    /// Who is signed in and their console names, or why that is not known.
-    Consoles(Result<(String, Vec<String>), String>),
+    /// Who is signed in, if anyone, and their console names or why those could not be listed.
+    Consoles(Option<String>, Result<Vec<String>, String>),
 }
 
 fn main() {
@@ -99,6 +99,7 @@ fn main() {
     let account = MenuItem::new("Loading…", false, None);
     let sign_in = MenuItem::new("Sign In in Terminal…", true, None);
     let sign_in_browser = MenuItem::new("Sign In with Browser…", true, None);
+    let sign_out = MenuItem::new("Sign Out", true, None);
     let routes = MenuItem::new("Edit Extra Routes…", true, None);
     let install = MenuItem::new("", true, None);
     let menu = Menu::new();
@@ -107,8 +108,6 @@ fn main() {
         &account,
         &PredefinedMenuItem::separator(),
         &PredefinedMenuItem::separator(),
-        &sign_in_browser,
-        &sign_in,
         &routes,
         &install,
         &PredefinedMenuItem::quit(None),
@@ -137,12 +136,17 @@ fn main() {
                 tray = Some(icon.build().expect("the menu bar accepts an icon"));
             }
             Event::NewEvents(_) => {}
-            Event::UserEvent(AppEvent::Consoles(found)) => {
+            Event::UserEvent(AppEvent::Consoles(user, found)) => {
                 for item in consoles.drain(..) {
                     let _ = menu.remove(&item);
                 }
-                match found {
-                    Ok((user, names)) => {
+                // Removing an item that is not in the menu fails, and that is fine.
+                for item in [&sign_in_browser, &sign_in, &sign_out] {
+                    let _ = menu.remove(item);
+                }
+                let listed = found.is_ok();
+                match (&user, found) {
+                    (Some(user), Ok(names)) => {
                         let none = if names.is_empty() { ": no consoles" } else { "" };
                         account.set_text(format!("Signed in as {user}{none}"));
                         consoles = names
@@ -153,7 +157,17 @@ fn main() {
                             let _ = menu.insert(item, CONSOLES_AT + i);
                         }
                     }
-                    Err(e) => account.set_text(e),
+                    (Some(user), Err(e)) => account.set_text(format!("{user}: {e}")),
+                    (None, _) => account.set_text("Not signed in"),
+                }
+                // Signing in is only offered when it is needed: to nobody, or to a session that stopped working.
+                let mut at = CONSOLES_AT + consoles.len() + 1;
+                if user.is_none() || !listed {
+                    let _ = menu.insert_items(&[&sign_in_browser, &sign_in], at);
+                    at += 2;
+                }
+                if user.is_some() {
+                    let _ = menu.insert(&sign_out, at);
                 }
             }
             Event::UserEvent(AppEvent::Menu(event)) => {
@@ -164,6 +178,10 @@ fn main() {
                     } else {
                         fs::remove_file(dir.join(CONNECT_FILE))
                     }
+                } else if event.id == *sign_out.id() {
+                    // Without a session the helper could not reconnect, so it is told to stop too.
+                    let _ = fs::remove_file(dir.join(CONNECT_FILE));
+                    sso::clear_session(&dir).map_err(io::Error::other)
                 } else if event.id == *sign_in.id() {
                     sign_in_terminal()
                 } else if event.id == *sign_in_browser.id() {
@@ -262,14 +280,15 @@ fn main() {
 fn load_consoles(proxy: EventLoopProxy<AppEvent>) {
     thread::spawn(move || {
         let dir = config_dir();
-        let found = match sso::load_session(&dir) {
-            Ok(Some(session)) => connect::consoles(&dir)
-                .map(|consoles| (session.user.clone(), consoles.into_iter().map(|c| c.name).collect()))
-                .map_err(|e| format!("{}: {e}", session.user)),
-            Ok(None) => Err("Not signed in".to_string()),
-            Err(e) => Err(e.to_string()),
+        let event = match sso::load_session(&dir) {
+            Ok(Some(session)) => {
+                let found = connect::consoles(&dir).map(|consoles| consoles.into_iter().map(|c| c.name).collect());
+                AppEvent::Consoles(Some(session.user), found.map_err(|e| e.to_string()))
+            }
+            Ok(None) => AppEvent::Consoles(None, Ok(Vec::new())),
+            Err(e) => AppEvent::Consoles(None, Err(e.to_string())),
         };
-        let _ = proxy.send_event(AppEvent::Consoles(found));
+        let _ = proxy.send_event(event);
     });
 }
 

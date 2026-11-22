@@ -67,8 +67,9 @@ sudo teleport-split uninstall
 ```
 
 The menu bar app does the same: it lists your consoles, and clicking one
-connects or disconnects. "Sign In in Terminal…" runs `login` in a terminal,
-"Sign In with Browser…" is described above.
+connects or disconnects. It shows who is signed in, with "Sign Out" below the
+consoles. While nobody is signed in it offers "Sign In with Browser…"
+(described above) and "Sign In in Terminal…", which runs `login` in a terminal.
 
 ### What gets routed
 
